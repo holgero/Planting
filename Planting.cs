@@ -15,6 +15,7 @@ namespace Planting
         private static Planting context;
 
         public static ConfigEntry<bool> modEnabled;
+        public static ConfigEntry<bool> snapPlantingPosition;
 
         public static void Dbgl(string str = "", bool pref = true)
         {
@@ -27,7 +28,7 @@ namespace Planting
             context = this;
 
             modEnabled = Config.Bind<bool>("General", "Enabled", true, "Enable this mod");
-
+            snapPlantingPosition = Config.Bind<bool>("General", "SnapPlanting", true, "Snap planting position to the next possible position");
             if (!modEnabled.Value)
                 return;
 
@@ -42,20 +43,37 @@ namespace Planting
                 if (___m_placementMarkerInstance != null && ___m_placementGhost?.GetComponent<Plant>() != null)
                 {
                     Plant plant = ___m_placementGhost.GetComponent<Plant>();
+                    if (snapPlantingPosition.Value)
+                    {   // snapping should work as this:
+                        // if no plant in an radius of 2*growRadius -> free placement, no snapping at all
+                        // else if the distance between that plant and current intended placement position is < 0.5 growRadius, do nothing
+                        // else draw a line from the other plant to the current intended placement position
+                        //      snap that line to an angle that is a multiple of 15 degrees with respect to the global grid
+                        //      along that line calculate the minimum distance between the two plants that is necessary for both to grow
+                        //      snap the placement position to that point on the line
+                        var currentPos = plant.transform.position;
+                    }
+                    if (plant.m_needCultivatedGround && !Heightmap.FindHeightmap(plant.transform.position).IsCultivated(plant.transform.position))
+                    {
+                        setPlacementStatus(__instance, Player.PlacementStatus.NeedCultivated);
+                        return;
+                    }
                     if (!HaveGrowSpace(plant))
                     {
-                        typeof(Player).GetField("m_placementStatus", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(__instance, 5);
-                        typeof(Player).GetMethod("SetPlacementGhostValid", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(__instance, new object[] { false });
+                        setPlacementStatus(__instance, Player.PlacementStatus.MoreSpace);
+                        return;
                     }
                 }
+            }
+            static void setPlacementStatus(Player player, Player.PlacementStatus status)
+            {   // one has to access the respective methods via reflection, it seems
+                typeof(Player).GetField("m_placementStatus", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(player, status);
+                typeof(Player).GetMethod("SetPlacementGhostValid", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(player, new object[] { status == Player.PlacementStatus.Valid });
             }
         }
 
         private static bool HaveGrowSpace(Plant plant)
         {
-            if (plant.m_needCultivatedGround && !Heightmap.FindHeightmap(plant.transform.position).IsCultivated(plant.transform.position))
-                return false;
-
             var spaceMask = LayerMask.GetMask(new string[] {
                 "Default",
                 "static_solid",
@@ -99,12 +117,17 @@ namespace Planting
 
         private static float GetMaximumColliderRadius(Plant plant)
         {
-            CapsuleCollider grownCollider = plant.m_grownPrefabs[0].GetComponent<CapsuleCollider>();
-            if (grownCollider)
-            {   // grown plant might be bigger or smaller than the sapling
-                return Math.Max(grownCollider.radius, plant.GetComponent<CapsuleCollider>().radius);
+            float maximumRadius = plant.GetComponent<CapsuleCollider>().radius;
+            foreach (var prefab in plant.m_grownPrefabs)
+            {
+                CapsuleCollider grownCollider = prefab.GetComponent<CapsuleCollider>();
+                if (grownCollider)
+                {
+                    // Dbgl($"previous maximum: {maximumRadius}, grown collider radius: {grownCollider.radius}");
+                    maximumRadius =  Math.Max(maximumRadius, grownCollider.radius);
+                }
             }
-            return plant.GetComponent<CapsuleCollider>().radius;
+            return maximumRadius;
         }
     }
 }
