@@ -1,14 +1,9 @@
-﻿using BepInEx;
+﻿using System;
+using System.Reflection;
+using BepInEx;
 using BepInEx.Configuration;
 using HarmonyLib;
-using System;
-using System.Reflection;
-using System.Collections.Generic;
-using System.Linq;
-using System.Reflection.Emit;
 using UnityEngine;
-using UnityEngine.UI;
-using System.Diagnostics.Contracts;
 
 namespace Planting
 {
@@ -46,7 +41,7 @@ namespace Planting
             LineRenderer renderer = plantingLine.GetComponent<LineRenderer>();
             renderer.startColor = renderer.endColor = Color.grey;
             renderer.startWidth = renderer.endWidth = 0.02f;
-            renderer.material = new Material(Shader.Find("Legacy Shaders/Particles/Alpha Blended"));
+            renderer.material = new Material(Shader.Find("Standard"));
             renderer.positionCount = 2;
         }
 
@@ -68,8 +63,7 @@ namespace Planting
                     Plant plant = ___m_placementGhost.GetComponent<Plant>();
                     if (snapPlantingPosition.Value)
                     {
-                        var currentPos = plant.transform.position;
-                        var nextPosition = FindSnapPoint(currentPos, plant.m_growRadius);
+                        var nextPosition = FindSnapPoint(plant);
                         if (!nextPosition.Equals(Vector3.zero))
                         {
                             plant.transform.position = nextPosition;
@@ -93,31 +87,37 @@ namespace Planting
             }
         }
 
-        private static Vector3 FindSnapPoint(Vector3 position, float radius)
-        {   // snapping should work as this:
-            // if no plant in an radius of 2*growRadius -> free placement, no snapping at all
-            Vector3 anchorPoint = FindAnchorPoint(position, 2*radius);
-            // Dbgl($"got anchor {anchorPoint}");
-            if (anchorPoint.Equals(Vector3.zero))
+        private static Vector3 FindSnapPoint(Plant plant)
+        {
+            Collider anchor = FindAnchor(plant.transform.position, 2.0f * plant.m_growRadius);
+            if (!anchor)
             {
                 HidePlantingLine();
                 return Vector3.zero;
             }
-            // else if the distance between that plant and current intended placement position is < 0.5 growRadius, do nothing
-            if (Vector3.Distance(position, anchorPoint) < radius/2.0f)
+            // Dbgl($"got anchor {anchor}");
+            if (Vector3.Distance(plant.transform.position, anchor.transform.position) < plant.m_growRadius)
             {
                 HidePlantingLine();
                 return Vector3.zero;
             }
-            // else draw a line from the other plant to the current intended placement position
-            DrawAnchorLine(anchorPoint, position);
-            Vector3 fromAnchor = position - anchorPoint;
-            //      snap that line to an angle that is a multiple of 15 degrees with respect to the global grid
-            //      along that line calculate the minimum distance between the two plants that is necessary for both to grow
-            //      snap the placement position to that point on the line
+            Vector3 fromAnchor = plant.transform.position - anchor.transform.position;
+            var angle = Vector3.SignedAngle(fromAnchor, Vector3.forward, Vector3.up);
+            int closestSnap = (int)Math.Round(angle / 22.5f);
+            float snapAngle = closestSnap * 22.5f;
+            float snapLength = plant.m_growRadius + GetMaximumColliderRadius(plant);
+            if (anchor.GetComponent<Plant>())
+            {
+                var otherPlant = anchor.GetComponent<Plant>();
+                snapLength = Math.Max(plant.m_growRadius + GetMaximumColliderRadius(otherPlant), otherPlant.m_growRadius + GetMaximumColliderRadius(plant));
+            }
+            snapLength += 0.05f;
+            Vector3 snappedFromAnchorPoint = new Vector3((float)(-Math.Sin(Math.PI / 180 * snapAngle) * snapLength), fromAnchor.y, (float)(Math.Cos(Math.PI / 180 * snapAngle) * snapLength));
+            Vector3 snappedPosition = anchor.transform.position + snappedFromAnchorPoint;
+            DrawAnchorLine(anchor.transform.position, snappedPosition);
 
             // improve case: there is a second plant behind the first one found: now only snap to multiples of 90 degrees w.r.t. that angle
-            return Vector3.zero;
+            return snappedPosition;
         }
 
         private static void DrawAnchorLine(Vector3 start, Vector3 end)
@@ -134,12 +134,12 @@ namespace Planting
             renderer.enabled = true;
         }
 
-        private static Vector3 FindAnchorPoint(Vector3 position, float radius)
+        private static Collider FindAnchor(Vector3 position, float radius)
         {
             // search for the nearest plant within a given radius
             var plantsMask = LayerMask.GetMask(new string[] { "piece_nonsolid" });
-            Vector3 anchorPosition = Vector3.zero;
-            float minDistance = 2*radius;
+            Collider anchor = null;
+            float minDistance = 2 * radius;
 
             Collider[] nearThings = Physics.OverlapSphere(position, radius, plantsMask);
             foreach (var thing in nearThings)
@@ -152,13 +152,13 @@ namespace Planting
                     if (distance < minDistance)
                     {
                         minDistance = distance;
-                        anchorPosition = plant.transform.position;
+                        anchor = thing;
                     }
                 }
             }
-            if (!anchorPosition.Equals(Vector3.zero))
+            if (anchor)
             {
-                return anchorPosition;
+                return anchor;
             }
             // no plant found, try to find other snap points on the layer piece_nonsolid: this should match the grown up plants (Pickable_XXX and Pickable_SeedXXX).
             foreach (var thing in nearThings)
@@ -168,10 +168,10 @@ namespace Planting
                 if (distance < minDistance)
                 {
                     minDistance = distance;
-                    anchorPosition = thing.transform.position;
+                    anchor = thing;
                 }
             }
-            return anchorPosition;
+            return anchor;
         }
 
         private static void SetPlacementStatus(Player player, Player.PlacementStatus status)
